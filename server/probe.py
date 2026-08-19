@@ -4064,7 +4064,11 @@ class HttpProbe(BaseHTTPRequestHandler):
                             request_document = {}
                     if effective_method in {"PUT", "POST"} and hasattr(identity_store, "update_offline_tournament_user"):
                         response = identity_store.update_offline_tournament_user(tournament_id, request_document)
-                        response_name = "fut-offline-tournament-user-update-beta28"
+                        response_name = (
+                            "fut-offline-tournament-user-update-beta28-minimal"
+                            if set(response) == {"tournamentId"}
+                            else "fut-offline-tournament-user-update-beta28-echo"
+                        )
                     elif hasattr(identity_store, "offline_tournament_user"):
                         response = identity_store.offline_tournament_user(tournament_id)
                         response_name = "fut-offline-tournament-user-read-beta28"

@@ -2460,6 +2460,26 @@ class BetaIdentityStore(LocalIdentityStore):
             return "empty"
         return "native"
 
+    @staticmethod
+    def tournament_update_ack_mode() -> str:
+        """Choose how tournament progress PUT requests are acknowledged.
+
+        The PC client already owns the opaque bracket buffers it submits. Logs
+        from a reproducible second-match crash show the client closing shortly
+        after the server echoes the newly-created round-3 buffers back to it.
+        In ``auto`` mode, keep the proven round-1/2 echo behaviour but use the
+        parser-safe identity-only acknowledgement from round 3 onward.
+
+        ``echo`` restores the BETA 2.25.9 behaviour for comparison, while
+        ``minimal`` applies the small acknowledgement to every round.
+        """
+        raw = os.environ.get("FIFA14_TOURNAMENT_UPDATE_ACK", "auto").strip().lower()
+        if raw in {"echo", "legacy", "full"}:
+            return "echo"
+        if raw in {"minimal", "safe", "identity"}:
+            return "minimal"
+        return "auto"
+
     def _starter_tournament_wire_entry(self) -> dict[str, Any]:
         return _native_starter_tournament()
 
@@ -2561,8 +2581,17 @@ class BetaIdentityStore(LocalIdentityStore):
                 "UPDATE beta_offline_tournaments SET current_round=?,updated_at=? WHERE persona_id=? AND tournament_id=?",
                 (payload["round"] if resumable else 0, int(time.time()), persona_id, tournament_id),
             )
-        # Echo exactly what the client wrote; only the persisted resume marker is
-        # sanitized. This keeps first-entry parsing identical to the proven flow.
+        # The client already retains the opaque buffers it just submitted.  The
+        # full payload remains persisted for a later GET/resume, but echoing a
+        # newly-created round-3 buffer is the last HTTP event before the observed
+        # post-second-match process exit.  The identity-only object is already a
+        # proven parser-safe tournament-user shape on fresh/non-resumable reads.
+        ack_mode = self.tournament_update_ack_mode()
+        if ack_mode == "minimal" or (ack_mode == "auto" and payload["round"] >= 3):
+            return {"tournamentId": tournament_id}
+
+        # Keep the established round-1/2 behaviour and offer an explicit legacy
+        # mode so the two response paths can be compared from identical saves.
         return payload
 
     def offline_tournament_user(self, tournament_id: int) -> dict[str, Any]:

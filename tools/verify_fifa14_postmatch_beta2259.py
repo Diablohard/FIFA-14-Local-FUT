@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import struct
 import sys
 import tempfile
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
@@ -131,6 +133,41 @@ def main() -> int:
         require(store.offline_tournament_user_list().get("tournamentId") == [],
                 "loss did not reset knockout resume state")
 
+        # Reproduce the user's failing boundary: after two wins the retail
+        # client submits a resumable round-3 bracket.  The server must persist
+        # the complete opaque data for future GETs without reflecting those
+        # buffers into the immediate PUT response.
+        round3_tournament_data = "captured-round3-tournament-data"
+        round3_progress_data = "KAAAAAAAAAADAAAATUNJAAAAAAAAAAAAAAAAAAoAAAABAAAABAAAAAAAAAA="
+        with patch.dict(os.environ, {"FIFA14_TOURNAMENT_UPDATE_ACK": "auto"}):
+            round3_ack = store.update_offline_tournament_user(3, {
+                "round": 3,
+                "dataVersion": 1,
+                "tournamentData": round3_tournament_data,
+                "progressDataVersion": 1,
+                "progressData": round3_progress_data,
+            })
+        require(round3_ack == {"tournamentId": 3},
+                f"round-3 PUT did not use the minimal acknowledgement: {round3_ack}")
+        persisted_round3 = store.offline_tournament_user(3)
+        require(int(persisted_round3.get("round", 0)) == 3,
+                f"round-3 progress was not retained: {persisted_round3}")
+        require(persisted_round3.get("tournamentData") == round3_tournament_data,
+                "round-3 tournamentData was lost while minimizing the acknowledgement")
+        require(persisted_round3.get("progressData") == round3_progress_data,
+                "round-3 progressData was lost while minimizing the acknowledgement")
+
+        with patch.dict(os.environ, {"FIFA14_TOURNAMENT_UPDATE_ACK": "echo"}):
+            legacy_ack = store.update_offline_tournament_user(3, {
+                "round": 3,
+                "dataVersion": 1,
+                "tournamentData": round3_tournament_data,
+                "progressDataVersion": 1,
+                "progressData": round3_progress_data,
+            })
+        require(legacy_ack.get("tournamentData") == round3_tournament_data,
+                "legacy echo comparison mode no longer returns the submitted payload")
+
     # Exact protocol regression from the user's capture: component 28 command 2
     # must be typed success, followed by ResultNotification command 114.
     rpc = build_shared_blaze_bootstrap_response(GAME_REPORTING_COMPONENT, 2, b"")
@@ -156,6 +193,8 @@ def main() -> int:
         "roundAfterWin": 2,
         "completionAward": 325,
         "walletMatchesDestroyMatch": True,
+        "round3UpdateAck": "minimal",
+        "round3ResumeDataPersisted": True,
         "gameReporting": {"component": 28, "submitOfflineCommand": 2, "resultNotification": 114},
     }, indent=2))
     return 0
