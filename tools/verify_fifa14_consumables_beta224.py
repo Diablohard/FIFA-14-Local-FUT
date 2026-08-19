@@ -14,6 +14,7 @@ if str(SERVER) not in sys.path:
 
 from beta_identity import BetaIdentityStore
 from local_identity import CONSUMABLE_BY_RESOURCE, CONSUMABLE_CATALOG
+from probe import HttpProbe
 
 
 def fail(message: str) -> None:
@@ -160,6 +161,32 @@ def main() -> int:
             if con.execute("SELECT 1 FROM items WHERE item_id=?", (owned,)).fetchone() is not None:
                 fail("squad fitness card was not consumed")
 
+        # Retail family routes encode the filter in the final path segment. A
+        # large club must not receive the first page of every consumable when it
+        # asks specifically for fitness cards.
+        route_category = HttpProbe._fut_consumable_route_category(
+            "/ut/game/fifa14/club/consumables/fitness"
+        )
+        if route_category != "fitness":
+            fail(f"fitness route did not resolve its category: {route_category!r}")
+        if HttpProbe._fut_consumable_route_category(
+            "/ut/game/fifa14/club/consumables/training"
+        ):
+            fail("ambiguous training route was narrowed to one development family")
+        serial += 1
+        grant(store, db, 5002003, serial)  # gold player fitness +60
+        serial += 1
+        grant(store, db, 5002006, serial)  # gold squad fitness +30
+        fitness_page = store.club_items({
+            "type": ["consumable"], "cat": [route_category], "count": ["200"],
+        })
+        if int(fitness_page.get("total", 0)) != 2:
+            fail(f"fitness family returned the wrong inventory: {fitness_page}")
+        for payload in fitness_page.get("itemData", []):
+            definition = CONSUMABLE_BY_RESOURCE.get(int(payload.get("resourceId", 0)), {})
+            if definition.get("category") != "Fitness":
+                fail(f"non-fitness card leaked into fitness family: {payload}")
+
         # Pack picker must be able to emit GK training in every tier and must never emit excluded rows.
         import random
         seen_gk = set()
@@ -179,7 +206,7 @@ def main() -> int:
             "catalogDefinitions": len(CONSUMABLE_CATALOG),
             "packEligibleDefinitions": len(eligible),
             "gkTrainingDefinitions": 21,
-            "tested": ["contract", "player fitness", "squad fitness", "healing", "position", "chemistry style", "player training expiry", "GK training", "pack pools"],
+            "tested": ["contract", "player fitness", "squad fitness", "fitness route filtering", "healing", "position", "chemistry style", "player training expiry", "GK training", "pack pools"],
         }, indent=2))
     return 0
 

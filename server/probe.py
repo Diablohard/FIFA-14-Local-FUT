@@ -2049,6 +2049,26 @@ class HttpProbe(BaseHTTPRequestHandler):
     server_version = "FIFA14LocalFUT/2.41.1-beta2.25.9"
 
     @staticmethod
+    def _fut_consumable_route_category(path_without_query: str) -> str:
+        """Translate unambiguous retail consumable collection paths.
+
+        FIFA 14 puts the selected family in the final URL segment instead of a
+        query parameter.  Passing only ``type=consumable`` made every family
+        request return the same first page of the whole club.  With a large
+        inventory that page contains no fitness cards even when dozens are
+        owned.  ``training`` remains deliberately broad because the legacy
+        client uses it for several player-development subfamilies.
+        """
+        segment = str(path_without_query or "").rstrip("/").rsplit("/", 1)[-1].casefold()
+        return {
+            "contract": "contract", "contracts": "contract",
+            "fitness": "fitness", "healing": "healing",
+            "position": "position", "positioning": "position",
+            "playstyle": "playstyle", "chemistry": "playstyle",
+            "managerleague": "managerleague",
+        }.get(segment, "")
+
+    @staticmethod
     def _dynamic_messages_payload() -> bytes:
         # Generic FUT dynamic-message feed. Keep this distinct from the
         # localization documents requested under /fut/loc/... .
@@ -3053,6 +3073,12 @@ class HttpProbe(BaseHTTPRequestHandler):
         ):
             query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
             query["type"] = ["consumable"]
+            category = self._fut_consumable_route_category(path_without_query)
+            if category:
+                query["cat"] = [category]
+            # A filtered family can legitimately contain more than the generic
+            # 50-card first page.  Return the complete family in one response.
+            query.setdefault("count", ["200"])
             response = identity_store.club_items(query)
             payload = build_fut_json_payload(response)
             self.send_response(200)
@@ -3060,7 +3086,7 @@ class HttpProbe(BaseHTTPRequestHandler):
             self.send_header("cache-control", "no-store")
             emit("fut-http-response", method=self.command, effective_method=effective_method, path=self.path,
                  response_name="fut-club-consumables-beta2258", status=200, bytes=len(payload),
-                 total=int(response.get("total", 0)))
+                 total=int(response.get("total", 0)), category=category or "broad")
         elif (
             getattr(self.server, "probe_name", "http") == "fut-http"
             and identity_store is not None
