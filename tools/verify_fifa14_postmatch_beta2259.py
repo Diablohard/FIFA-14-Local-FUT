@@ -133,10 +133,30 @@ def main() -> int:
         require(store.offline_tournament_user_list().get("tournamentId") == [],
                 "loss did not reset knockout resume state")
 
-        # Reproduce the user's failing boundary: after two wins the retail
-        # client submits a resumable round-3 bracket.  The server must persist
-        # the complete opaque data for future GETs without reflecting those
-        # buffers into the immediate PUT response.
+        # Reproduce both captured failure boundaries: re-entering a saved round
+        # 2 and saving a newly-created round 3.  The server must persist each
+        # complete opaque buffer for future GETs without reflecting it into the
+        # immediate PUT response.
+        round2_tournament_data = "captured-round2-tournament-data"
+        round2_progress_data = "KAAAAAAAAAACAAAATUNJAAAAAAAAAAAAAAAAAAkAAAABAAAACQAAAAAAAAA="
+        with patch.dict(os.environ, {"FIFA14_TOURNAMENT_UPDATE_ACK": "auto"}):
+            round2_ack = store.update_offline_tournament_user(2, {
+                "round": 2,
+                "dataVersion": 1,
+                "tournamentData": round2_tournament_data,
+                "progressDataVersion": 1,
+                "progressData": round2_progress_data,
+            })
+        require(round2_ack == {"tournamentId": 2},
+                f"round-2 PUT did not use the minimal acknowledgement: {round2_ack}")
+        persisted_round2 = store.offline_tournament_user(2)
+        require(int(persisted_round2.get("round", 0)) == 2,
+                f"round-2 progress was not retained: {persisted_round2}")
+        require(persisted_round2.get("tournamentData") == round2_tournament_data,
+                "round-2 tournamentData was lost while minimizing the acknowledgement")
+        require(persisted_round2.get("progressData") == round2_progress_data,
+                "round-2 progressData was lost while minimizing the acknowledgement")
+
         round3_tournament_data = "captured-round3-tournament-data"
         round3_progress_data = "KAAAAAAAAAADAAAATUNJAAAAAAAAAAAAAAAAAAoAAAABAAAABAAAAAAAAAA="
         with patch.dict(os.environ, {"FIFA14_TOURNAMENT_UPDATE_ACK": "auto"}):
@@ -193,6 +213,8 @@ def main() -> int:
         "roundAfterWin": 2,
         "completionAward": 325,
         "walletMatchesDestroyMatch": True,
+        "round2UpdateAck": "minimal",
+        "round2ResumeDataPersisted": True,
         "round3UpdateAck": "minimal",
         "round3ResumeDataPersisted": True,
         "gameReporting": {"component": 28, "submitOfflineCommand": 2, "resultNotification": 114},
